@@ -239,7 +239,7 @@ class EncoderBase {
   size_t num_op_nodes_;
   onnx_torch::OperatorExportTypes operator_export_type_;
   bool strip_doc_;
-  std::set<std::string> domains_;
+  std::set<Symbol> domains_;
 
   // For large models, the parameters can be stored in separate binary files.
   // This parameter sets a threshold on the number of elements in the parameter
@@ -426,14 +426,9 @@ void EncoderBase::EncodeBlock(
       EncodeIntermediateValueInfo(graph_proto, output);
     }
     if (!node->kind().is_onnx()) {
-      std::string domain;
-      if (node->kind().is_aten() || node->kind().is_caffe2()) {
-        domain = node->kind().domainString();
-      } else { //  Custom namespace and domain
-        domain = node->kind().ns().toUnqualString();
-      }
-      domains_.insert(domain);
-      p_n->set_domain(domain);
+      Symbol ns = node->kind();
+      domains_.insert(ns);
+      p_n->set_domain(ns.domainString());
     }
     if (is_raw_export) {
       AT_ASSERT(!node->kind().is_onnx());
@@ -632,9 +627,9 @@ GraphEncoder::GraphEncoder(
 
   for (const std::string& domain : domains_) {
     auto* opset = model_proto_.add_opset_import();
-    opset->set_domain(domain);
+    opset->set_domain(domain.domainString());
     //  Check if domain version is registered. If not, set to version 1
-    auto it = custom_opsets.find(domain);
+    auto it = custom_opsets.find(domain.ns().toUnqualString());
     if (it == custom_opsets.end())
       opset->set_version(1);
     else {
@@ -643,10 +638,11 @@ GraphEncoder::GraphEncoder(
   }
 
   for (auto const& custom_opset : custom_opsets) {
-    if (!std::count(domains_.begin(), domains_.end(), custom_opset.first)) {
+    Symbol sym = Symbol::fromQualString(custom_opset.first);
+    if (domains_.count(sym) == 0) {
       TORCH_WARN(
           "Custom opset domain: '",
-          custom_opset.first,
+          sym.domainString(),
           "' provided is not used in the model. ",
           "Please verify custom opset domain names.");
     }

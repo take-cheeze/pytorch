@@ -50,6 +50,42 @@ class TestCustomOps(unittest.TestCase):
         caffe2_out = prepared.run(inputs=[x.cpu().numpy(), y.cpu().numpy()])
         np.testing.assert_array_equal(caffe2_out[0], model(x, y).cpu().numpy())
 
+    def test_custom_aten_fallback(self):
+        op_source = """
+        #include <torch/script.h>
+
+        torch::Tensor custom_mul(torch::Tensor self, torch::Tensor other) {
+          return self + other;
+        }
+
+        static auto registry =
+          torch::RegisterOperators("custom_namespace::custom_mul", &custom_mul);
+        """
+
+        torch.utils.cpp_extension.load_inline(
+            name="custom_mul",
+            cpp_sources=op_source,
+            is_python_module=False,
+            verbose=True,
+        )
+
+        class CustomAddModel(torch.nn.Module):
+            def forward(self, a, b):
+                return torch.ops.custom_namespace.custom_mul(a, b)
+
+        x = torch.randn(2, 3, 4, requires_grad=False)
+        y = torch.randn(2, 3, 4, requires_grad=False)
+
+        model = CustomAddModel()
+        onnxir, _ = do_export(model, (x, y), opset_version=11,
+                              operator_export_type=torch.onnx.OperatorExportTypes.ONNX_ATEN_FALLBACK)
+        onnx_model = onnx.ModelProto.FromString(onnxir)
+        prepared = c2.prepare(onnx_model)
+        caffe2_out = prepared.run(inputs=[x.cpu().numpy(), y.cpu().numpy()])
+        assert onnx_model.opset_import[0].domain == 'custom_namespace.pytorch.org'
+        assert onnx_model.opset_import[0].version == 1
+        np.testing.assert_array_equal(caffe2_out[0], model(x, y).cpu().numpy())
+
 
 if __name__ == '__main__':
     unittest.main()
